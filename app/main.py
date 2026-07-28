@@ -50,8 +50,15 @@ class LessonState:
     student_turns: int
     first_ever: bool
     struggling: bool
+    review_word: str | None = None
 
-    def as_context(self) -> LessonContext:
+    def as_context(self, include_review: bool = False) -> LessonContext:
+        # arco pedagogico simples: primeira metade da aula = pratica guiada
+        # (Emily modela e faz perguntas dirigidas), segunda metade = producao
+        # livre (ver docs/lesson_progression.md e a conversa sobre "arco de aula")
+        guided_turns = max(1, -(-self.lesson.min_student_turns // 2))  # ceil(min/2)
+        phase = "guided" if self.student_turns < guided_turns else "free"
+
         return LessonContext(
             level=self.lesson.level,
             lesson_title=self.lesson.title,
@@ -59,6 +66,8 @@ class LessonState:
             focus_vocab=self.lesson.focus_vocab,
             first_ever_lesson=self.first_ever,
             struggling=self.struggling,
+            phase=phase,
+            review_word=self.review_word if include_review else None,
         )
 
 
@@ -68,7 +77,15 @@ def _start_lesson_state(memory: Memory, session_id: int) -> LessonState:
     first_ever = memory.is_first_ever_lesson()
     struggling = memory.count_recent_incomplete_attempts(lesson_id) >= 3
     attempt_id = memory.start_lesson_attempt(session_id, lesson_id)
-    return LessonState(lesson=lesson, attempt_id=attempt_id, student_turns=0, first_ever=first_ever, struggling=struggling)
+    review_word = memory.get_review_word(exclude=lesson.focus_vocab)
+    return LessonState(
+        lesson=lesson,
+        attempt_id=attempt_id,
+        student_turns=0,
+        first_ever=first_ever,
+        struggling=struggling,
+        review_word=review_word,
+    )
 
 
 def _open_session(
@@ -87,7 +104,7 @@ def _open_session(
     window_turns = cfg["memory"]["history_window_turns"]
     profile = memory.build_profile()
 
-    turn = tutor.open_session(profile.as_prompt_block(), state.as_context(), history)
+    turn = tutor.open_session(profile.as_prompt_block(), state.as_context(include_review=True), history)
 
     bridge.reply_text_changed.emit(turn.reply)
     bridge.correction_added.emit("")

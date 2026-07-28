@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
@@ -275,6 +276,17 @@ class Memory:
             streak += 1
             cursor -= timedelta(days=1)
         return streak
+
+    def get_review_word(self, exclude: list[str] | None = None) -> str | None:
+        """Repeticao espacada simples: puxa uma palavra de aula anterior pra
+        reforcar no aquecimento da proxima (nunca durante o resto da aula,
+        pra nao virar ruido)."""
+        exclude_lower = {w.lower().strip() for w in (exclude or [])}
+        rows = self._conn.execute("SELECT word FROM vocabulary").fetchall()
+        words = [r[0] for r in rows if r[0] not in exclude_lower]
+        if not words:
+            return None
+        return random.choice(words)
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()

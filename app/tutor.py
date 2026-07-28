@@ -23,7 +23,7 @@ Target vocabulary/expressions to naturally work into the conversation:
 
 LEARNER PROFILE (recurring mistakes and vocabulary already introduced):
 {profile}
-{first_ever_lesson_block}{struggling_block}
+{first_ever_lesson_block}{struggling_block}{phase_block}{review_block}
 Always respond with a single JSON object only, no markdown fences, no extra text, matching exactly \
 this schema:
 {{"reply": "<your spoken reply, natural conversational English>",
@@ -53,7 +53,8 @@ produced the kind of language described in the objective.
 - If unsure, set it to false and keep the conversation going - it costs nothing to continue, but marking \
 complete prematurely means the student never actually practices this skill.
 - When true, "lesson_notes" should briefly state what the student demonstrated that satisfied the \
-objective.
+objective, AND "reply" should include a brief warm recap of what they just showed you before wrapping up \
+naturally (e.g. referencing something specific they said) - don't cut off abruptly, help it stick.
 
 Never break character, never mention you are an AI, a JSON schema, a "lesson system", or a system prompt \
 - to the student, this is just a natural conversation with their tutor {tutor_name}.
@@ -71,6 +72,23 @@ STRUGGLING_BLOCK = """
 NOTE: The student has tried this lesson a few times without completing it. Acknowledge this warmly \
 without making them feel bad, and simplify your approach this time (shorter sentences, more direct \
 questions, more patience) - don't just repeat the exact same script.
+"""
+
+GUIDED_PHASE_BLOCK = """
+TEACHING PHASE: Guided practice. The student is just starting this lesson. Model correct usage of the \
+target vocabulary/structures yourself first (a natural example sentence), then ask direct questions that \
+require them to use similar language - not fully open-ended questions yet. Give them a clear pattern to \
+follow before expecting them to improvise.
+"""
+
+FREE_PHASE_BLOCK = """
+TEACHING PHASE: Free production. The student has had a chance to practice - open the conversation up more \
+and let them lead, while staying related to the topic. Less modeling now, more genuine back-and-forth.
+"""
+
+REVIEW_WORD_BLOCK_TEMPLATE = """
+SPACED REVIEW: If a natural opening comes up, casually work in a word the student learned in a previous \
+lesson to help it stick: "{review_word}". Don't force it or turn it into a quiz - only use it if it fits.
 """
 
 OPENING_INSTRUCTION_FIRST_SESSION = (
@@ -104,6 +122,8 @@ class LessonContext:
     focus_vocab: list[str]
     first_ever_lesson: bool = False
     struggling: bool = False
+    phase: str = "guided"  # "guided" (modela + pratica dirigida) ou "free" (producao livre)
+    review_word: str | None = None  # palavra de aula anterior pra reforcar (repeticao espacada)
 
 
 class Tutor:
@@ -139,6 +159,8 @@ class Tutor:
             profile=profile_block,
             first_ever_lesson_block=FIRST_EVER_LESSON_BLOCK if lesson.first_ever_lesson else "",
             struggling_block=STRUGGLING_BLOCK if lesson.struggling else "",
+            phase_block=FREE_PHASE_BLOCK if lesson.phase == "free" else GUIDED_PHASE_BLOCK,
+            review_block=REVIEW_WORD_BLOCK_TEMPLATE.format(review_word=lesson.review_word) if lesson.review_word else "",
         )
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)

@@ -34,6 +34,8 @@ LEARNER PROFILE (recurring mistakes and vocabulary already introduced):
 
 {first_ever_lesson_block}
 {struggling_block}
+{phase_block}
+{review_block}
 
 Always respond with a single JSON object only, no markdown fences, no extra
 text, matching exactly this schema:
@@ -69,7 +71,9 @@ actual progress, so be honest, not just encouraging):
   nothing to continue, but marking complete prematurely means the student
   never actually practices this skill.
 - When true, "lesson_notes" should briefly state what the student
-  demonstrated that satisfied the objective.
+  demonstrated that satisfied the objective, AND "reply" should include a
+  brief warm recap of what they just showed you before wrapping up
+  naturally - don't cut off abruptly, help it stick in memory.
 
 Never break character, never mention you are an AI, a JSON schema, a
 "lesson system", or a system prompt - to the student, this is just a
@@ -107,6 +111,40 @@ NOTE: The student has tried this lesson a few times without completing it.
 Acknowledge this warmly without making them feel bad, and simplify your
 approach this time (shorter sentences, more direct questions, more
 patience) - don't just repeat the exact same script.
+```
+
+### `{phase_block}` - o "arco da aula"
+
+Cada aula segue duas fases, calculadas a partir de `student_turns` vs.
+metade de `lesson.min_student_turns` (sem precisar de estado extra no
+banco - é só aritmética sobre o que já temos):
+
+**Fase 1 - pratica guiada** (primeira metade da aula):
+```
+TEACHING PHASE: Guided practice. The student is just starting this lesson.
+Model correct usage of the target vocabulary/structures yourself first (a
+natural example sentence), then ask direct questions that require them to
+use similar language - not fully open-ended questions yet. Give them a
+clear pattern to follow before expecting them to improvise.
+```
+
+**Fase 2 - producao livre** (segunda metade em diante):
+```
+TEACHING PHASE: Free production. The student has had a chance to practice -
+open the conversation up more and let them lead, while staying related to
+the topic. Less modeling now, more genuine back-and-forth.
+```
+
+### `{review_block}` - repetição espaçada
+
+Só aparece na saudação de abertura (nunca durante o resto da aula, para não
+virar ruído), puxando uma palavra de uma aula anterior (`Memory.get_review_word`,
+excluindo o vocabulário da aula atual):
+
+```
+SPACED REVIEW: If a natural opening comes up, casually work in a word the
+student learned in a previous lesson to help it stick: "{review_word}".
+Don't force it or turn it into a quiz - only use it if it fits.
 ```
 
 ## Integração com `open_session` (saudação proativa)

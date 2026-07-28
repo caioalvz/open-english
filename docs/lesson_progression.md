@@ -153,6 +153,32 @@ a complexidade da mesma aula, sem pular ela e sem repetir literalmente o
 mesmo roteiro. Isso pode ser implementado como uma flag simples passada pro
 prompt: `struggling: true` quando essa condição é detectada.
 
+## Como o ensino acontece dentro de cada aula (o "arco pedagógico")
+
+Ter um objetivo e vocabulário-alvo não é suficiente sozinho - a Emily
+precisa de alguma estrutura de ensino, não só evitar fugir do tópico. Cada
+aula segue duas fases (calculadas a partir de `student_turns` vs. metade de
+`min_student_turns`, sem precisar de estado novo no banco):
+
+1. **Prática guiada** (primeira metade da aula): a Emily modela o uso
+   correto do vocabulário-alvo com um exemplo natural antes de pedir que o
+   aluno produza, e faz perguntas diretas (não totalmente abertas) que
+   praticamente exigem o uso da estrutura-alvo.
+2. **Produção livre** (segunda metade em diante): menos modelagem, mais
+   conversa genuína - o aluno já teve a chance de praticar o padrão.
+3. **Recapitulação no fechamento**: quando a Emily marca `lesson_complete`,
+   a própria resposta precisa incluir um resumo caloroso do que o aluno
+   demonstrou, em vez de simplesmente cortar para a próxima coisa - reforça
+   retenção.
+
+Além disso, no aquecimento de cada aula (só na saudação de abertura), a
+Emily pode puxar casualmente uma palavra aprendida numa aula anterior
+(repetição espaçada simples, via `Memory.get_review_word`) - usa o
+vocabulário que já coletamos em vez de deixá-lo parado no banco.
+
+Ver `docs/emily_lesson_system_prompt.md` para o texto exato injetado no
+prompt em cada fase.
+
 ## Sem conhecimento prévio (acessibilidade)
 
 Só na **primeiríssima aula que o aluno já teve na vida** (ou seja,
