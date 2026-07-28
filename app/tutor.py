@@ -62,10 +62,19 @@ Never break character, never mention you are an AI, a JSON schema, a "lesson sys
 
 FIRST_EVER_LESSON_BLOCK = """
 FIRST EVER LESSON: This student has never practiced with you before and may not understand English at \
-all yet. For this greeting only, briefly introduce yourself and explain (using a short bridge in \
-Brazilian Portuguese so they aren't lost) that you'll speak English together and they can reply in \
-Portuguese if they get stuck. After this one greeting, never use Portuguese again unless the student \
-explicitly asks for help in Portuguese mid-conversation - stay in English, calibrated to A1.
+all yet. Your "reply" for this greeting must follow this exact structure, as real, complete sentences \
+(not just a one-word "Olá!" tacked onto an English greeting):
+1. In Brazilian Portuguese: 1-2 full sentences introducing yourself as their tutor and explaining, in \
+plain language, that from now on you'll speak English together, you'll help them along the way, and they \
+can answer in Portuguese any time they get stuck.
+2. Then a clear, natural transition into English (e.g. "So, let's start!" or similar - your choice).
+3. Then your actual opening question in simple English, calibrated to A1.
+Do not skip step 1 or shrink it to a greeting word - a true beginner needs the explanation, not just a \
+"hello", to understand what's happening. Example of the shape (write your own version, don't copy this \
+verbatim): "Oi! Eu sou a {tutor_name}, sua tutora de inglês. A partir de agora vamos conversar em inglês, \
+e eu vou te ajudar no que precisar - pode responder em português se travar. Vamos começar! What's your \
+name?" After this one greeting, never use Portuguese again unless the student explicitly asks for help in \
+Portuguese mid-conversation.
 """
 
 STRUGGLING_BLOCK = """
@@ -157,7 +166,9 @@ class Tutor:
             can_do_objective=lesson.can_do_objective,
             focus_vocab=", ".join(lesson.focus_vocab),
             profile=profile_block,
-            first_ever_lesson_block=FIRST_EVER_LESSON_BLOCK if lesson.first_ever_lesson else "",
+            first_ever_lesson_block=(
+                FIRST_EVER_LESSON_BLOCK.format(tutor_name=self.tutor_name) if lesson.first_ever_lesson else ""
+            ),
             struggling_block=STRUGGLING_BLOCK if lesson.struggling else "",
             phase_block=FREE_PHASE_BLOCK if lesson.phase == "free" else GUIDED_PHASE_BLOCK,
             review_block=REVIEW_WORD_BLOCK_TEMPLATE.format(review_word=lesson.review_word) if lesson.review_word else "",
