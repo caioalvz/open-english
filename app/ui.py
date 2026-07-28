@@ -1,4 +1,5 @@
-"""Interface da Emily: orbe organico que respira/reage ao audio + legendas."""
+"""Interface da Emily: aba de conversa (orbe) + aba de progresso, na mesma
+janela - sem popups nem janelas externas."""
 from __future__ import annotations
 
 import math
@@ -6,9 +7,20 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QObject
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter
-from PyQt6.QtWidgets import QWidget, QMainWindow, QVBoxLayout, QLabel, QApplication
+from PyQt6.QtWidgets import (
+    QWidget,
+    QMainWindow,
+    QVBoxLayout,
+    QLabel,
+    QApplication,
+    QTabWidget,
+    QListWidget,
+    QListWidgetItem,
+)
 
+from app import curriculum
 from app.audio_io import AmplitudeMonitor
+from app.memory import Memory
 from app.theme import (
     BG_DEEP,
     STATE_COLORS,
@@ -17,6 +29,9 @@ from app.theme import (
     draw_emily_rings,
     render_glow_pixmap,
 )
+
+PANEL_BG = QColor("#1c1420")
+LOCKED_COLOR = QColor("#6b5f73")
 
 
 class TutorBridge(QObject):
@@ -27,6 +42,7 @@ class TutorBridge(QObject):
     correction_added = pyqtSignal(str)
     status_changed = pyqtSignal(str)
     error_changed = pyqtSignal(str)
+    progress_changed = pyqtSignal()
 
 
 class OrbWidget(QWidget):
@@ -97,15 +113,12 @@ class OrbWidget(QWidget):
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, label)
 
 
-class MainWindow(QMainWindow):
-    def __init__(self, amp_monitor: AmplitudeMonitor, bridge: TutorBridge, title: str):
-        super().__init__()
-        self.setWindowTitle(title)
-        self.setStyleSheet(f"background-color: {BG_DEEP.name()};")
-        self.resize(560, 720)
+class ConversationTab(QWidget):
+    """A aba original: orbe + legendas da conversa em andamento."""
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
+    def __init__(self, amp_monitor: AmplitudeMonitor, bridge: TutorBridge, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
@@ -139,8 +152,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.correction_label)
         layout.addWidget(self.error_label)
 
-        self.setCentralWidget(central)
-
         bridge.user_text_changed.connect(lambda t: self.user_label.setText(f"You: {t}"))
         bridge.user_text_changed.connect(lambda _t: self.error_label.setText(""))
         bridge.reply_text_changed.connect(lambda t: self.reply_label.setText(f"Emily: {t}"))
@@ -148,14 +159,130 @@ class MainWindow(QMainWindow):
         bridge.error_changed.connect(self.error_label.setText)
 
 
-def run_ui(amp_monitor: AmplitudeMonitor, bridge: TutorBridge, title: str) -> int:
+class ProgressTab(QWidget):
+    """Painel de progresso: nivel/sequencia/vocabulario, plano da aula atual
+    e a trilha completa A1->C2 - tudo lido do banco local (data/tutor.db)."""
+
+    def __init__(self, memory: Memory, parent=None):
+        super().__init__(parent)
+        self.memory = memory
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        header_style = f"color: {TEXT_PRIMARY.name()}; font-family: 'Segoe UI'; font-size: 15px; font-weight: 700;"
+        body_style = f"color: {TEXT_PRIMARY.name()}; font-family: 'Segoe UI'; font-size: 13px;"
+
+        self.stats_label = QLabel()
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setStyleSheet(header_style)
+        layout.addWidget(self.stats_label)
+
+        plan_title = QLabel("Current lesson")
+        plan_title.setStyleSheet(f"color: {STATE_COLORS['listening'].name()}; font-family: 'Segoe UI'; font-size: 12px; font-weight: 700;")
+        layout.addWidget(plan_title)
+
+        self.plan_label = QLabel()
+        self.plan_label.setWordWrap(True)
+        self.plan_label.setStyleSheet(body_style)
+        layout.addWidget(self.plan_label)
+
+        path_title = QLabel("Learning path (A1 -> C2)")
+        path_title.setStyleSheet(f"color: {STATE_COLORS['listening'].name()}; font-family: 'Segoe UI'; font-size: 12px; font-weight: 700;")
+        layout.addWidget(path_title)
+
+        self.path_list = QListWidget()
+        self.path_list.setStyleSheet(
+            f"QListWidget {{ background-color: {PANEL_BG.name()}; border: none; "
+            f"color: {TEXT_PRIMARY.name()}; font-family: 'Segoe UI'; font-size: 12px; }}"
+            "QListWidget::item { padding: 4px 6px; }"
+        )
+        layout.addWidget(self.path_list, stretch=1)
+
+        self.refresh()
+
+    def refresh(self) -> None:
+        profile = self.memory.build_profile()
+        completed_ids = self.memory.get_completed_lesson_ids()
+        streak = self.memory.get_streak_days()
+        current_id = self.memory.get_current_lesson_id()
+        current_lesson = curriculum.get_lesson(current_id)
+
+        total = len(curriculum.LESSONS)
+        done = len(completed_ids)
+
+        self.stats_label.setText(
+            f"Level {profile.cefr_level}  -  {done}/{total} lessons  -  "
+            f"{profile.known_vocab_count} words  -  {streak}-day streak"
+        )
+
+        vocab_preview = ", ".join(current_lesson.focus_vocab[:5])
+        self.plan_label.setText(
+            f"{current_lesson.title}\n"
+            f"Goal: {current_lesson.can_do_objective}\n"
+            f"Key phrases: {vocab_preview}"
+        )
+
+        self.path_list.clear()
+        last_level = None
+        for lesson in curriculum.LESSONS:
+            if lesson.level != last_level:
+                header = QListWidgetItem(f"— {lesson.level} —")
+                header.setForeground(QColor(TEXT_PRIMARY))
+                font = header.font()
+                font.setBold(True)
+                header.setFont(font)
+                header.setFlags(Qt.ItemFlag.NoItemFlags)
+                self.path_list.addItem(header)
+                last_level = lesson.level
+
+            if lesson.id in completed_ids:
+                marker, color = "[x]", STATE_COLORS["speaking"]
+            elif lesson.id == current_id:
+                marker, color = "[>]", STATE_COLORS["listening"]
+            else:
+                marker, color = "[ ]", LOCKED_COLOR
+
+            item = QListWidgetItem(f"  {marker} {lesson.title}")
+            item.setForeground(color)
+            self.path_list.addItem(item)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, amp_monitor: AmplitudeMonitor, bridge: TutorBridge, title: str, memory: Memory):
+        super().__init__()
+        self.setWindowTitle(title)
+        self.setStyleSheet(f"background-color: {BG_DEEP.name()};")
+        self.resize(580, 780)
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            f"QTabWidget::pane {{ border: none; background-color: {BG_DEEP.name()}; }}"
+            f"QTabBar::tab {{ background: {PANEL_BG.name()}; color: {TEXT_PRIMARY.name()}; "
+            "padding: 8px 20px; font-family: 'Segoe UI'; }"
+            f"QTabBar::tab:selected {{ background: {BG_DEEP.name()}; "
+            f"border-bottom: 2px solid {STATE_COLORS['listening'].name()}; }}"
+        )
+
+        self.conversation_tab = ConversationTab(amp_monitor, bridge)
+        self.progress_tab = ProgressTab(memory)
+        tabs.addTab(self.conversation_tab, "Conversation")
+        tabs.addTab(self.progress_tab, "Progress")
+
+        self.setCentralWidget(tabs)
+
+        bridge.progress_changed.connect(self.progress_tab.refresh)
+
+
+def run_ui(amp_monitor: AmplitudeMonitor, bridge: TutorBridge, title: str, memory: Memory) -> int:
     app = QApplication.instance() or QApplication([])
 
     icon_path = Path(__file__).resolve().parent.parent / "assets" / "emily_icon.ico"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    window = MainWindow(amp_monitor, bridge, title)
+    window = MainWindow(amp_monitor, bridge, title, memory)
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
     window.show()

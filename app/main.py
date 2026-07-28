@@ -97,6 +97,7 @@ def _open_session(
 
     memory.record_turn(session_id, "", turn.reply)
     memory.record_vocabulary(session_id, turn.new_vocab)
+    bridge.progress_changed.emit()
 
     audio_out = tts.synthesize(turn.reply)
     audio_io.play(audio_out, tts.sample_rate)
@@ -152,6 +153,7 @@ def _process_turn(
     memory.record_turn(session_id, user_text, turn.reply)
     memory.record_corrections(session_id, turn.corrections)
     memory.record_vocabulary(session_id, turn.new_vocab)
+    bridge.progress_changed.emit()
 
     audio_out = tts.synthesize(turn.reply)
     audio_io.play(audio_out, tts.sample_rate)
@@ -281,7 +283,7 @@ def main() -> None:
     worker.start()
 
     try:
-        run_ui(amp_monitor, bridge, cfg["ui"]["window_title"])
+        run_ui(amp_monitor, bridge, cfg["ui"]["window_title"], memory)
     finally:
         stop_event.set()
         worker.join(timeout=5)

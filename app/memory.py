@@ -245,6 +245,37 @@ class Memory:
         )
         self._conn.commit()
 
+    def get_completed_lesson_ids(self) -> set[str]:
+        rows = self._conn.execute("SELECT DISTINCT lesson_id FROM lesson_attempts WHERE completed = 1").fetchall()
+        return {r[0] for r in rows}
+
+    def get_streak_days(self) -> int:
+        """Dias seguidos com pelo menos uma aula concluida (permite que hoje
+        ainda nao tenha nenhuma, senao a sequencia "zeraria" toda manha antes
+        do aluno ter chance de praticar)."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT substr(ended_at, 1, 10) AS d FROM lesson_attempts "
+            "WHERE completed = 1 AND ended_at IS NOT NULL ORDER BY d DESC"
+        ).fetchall()
+        practiced_days = {r[0] for r in rows if r[0]}
+        if not practiced_days:
+            return 0
+
+        from datetime import timedelta
+
+        today = datetime.now(timezone.utc).date()
+        cursor = today
+        if cursor.isoformat() not in practiced_days:
+            cursor -= timedelta(days=1)
+            if cursor.isoformat() not in practiced_days:
+                return 0
+
+        streak = 0
+        while cursor.isoformat() in practiced_days:
+            streak += 1
+            cursor -= timedelta(days=1)
+        return streak
+
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row[0] if row else default
