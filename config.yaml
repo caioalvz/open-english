@@ -1,0 +1,42 @@
+# Configuração do tutor de inglês local
+
+tutor:
+  name: "Emily"
+
+ollama:
+  host: "http://localhost:11434"
+  model: "llama3.1:8b-instruct-q4_K_M"
+  temperature: 0.7
+  context_window: 8192
+
+stt:
+  model_size: "small.en"      # tiny.en, base.en, small.en, medium.en
+  device: "cuda"               # "cuda" ou "cpu" (troque se faltar VRAM)
+  compute_type: "int8_float16" # bom equilíbrio velocidade/qualidade na 4060
+
+tts:
+  engine: "piper"
+  piper_exe: "bin/piper/piper.exe"
+  voice_path: "data/voices/en_US-hfc_female-medium.onnx"
+  config_path: "data/voices/en_US-hfc_female-medium.onnx.json"
+
+vad:
+  threshold: 0.5
+  min_silence_ms: 700          # silêncio para considerar que o usuário parou de falar
+  min_speech_ms: 250           # ignora ruídos muito curtos
+  min_utterance_rms: 0.008     # descarta trechos fracos demais (ruído) antes de mandar pro Whisper
+  sample_rate: 16000
+
+audio:
+  input_device: null           # null = dispositivo default do sistema
+  output_device: null
+  channels: 1
+
+memory:
+  db_path: "data/tutor.db"
+  history_window_turns: 12     # quantos turnos recentes entram no contexto do LLM
+  profile_update_every_n_sessions: 1
+
+ui:
+  window_title: "Emily - English Tutor"
+  # cores e formas ficam em app/theme.py (identidade visual da Emily)

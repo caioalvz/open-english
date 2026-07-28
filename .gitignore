@@ -1,0 +1,12 @@
+# Ambiente virtual e binarios baixados no setup
+.venv/
+bin/
+
+# Modelos e dados locais do usuario (baixados/gerados pelo setup.ps1)
+data/voices/
+data/tutor.db
+data/tutor.log
+
+# Caches Python
+__pycache__/
+*.pyc
