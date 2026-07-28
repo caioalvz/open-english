@@ -1,4 +1,8 @@
-"""Tutor de ingles local (Emily): liga microfone -> VAD -> STT -> LLM (Ollama) -> TTS -> UI sci-fi HUD."""
+"""Tutor de ingles local (Emily): liga microfone -> VAD -> STT -> LLM (Ollama) -> TTS -> UI sci-fi HUD.
+
+A conversa segue um curriculo real (ver docs/lesson_progression.md): cada
+sessao trabalha em cima da aula atual do aluno, e so avanca pra proxima
+quando a aula e genuinamente concluida (nunca so por abrir/fechar o app)."""
 from __future__ import annotations
 
 import ctypes
@@ -6,16 +10,18 @@ import logging
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from app import curriculum
 from app.audio_io import AudioIO, AmplitudeMonitor
+from app.curriculum import Lesson
 from app.memory import Memory
 from app.stt import SpeechToText
 from app.tts import TextToSpeech
-from app.tutor import Tutor
+from app.tutor import LessonContext, Tutor
 from app.ui import TutorBridge, run_ui
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +39,69 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+@dataclass
+class LessonState:
+    """Estado da aula em andamento nesta sessao - vive alem de um unico
+    turno, e e recarregado sempre que uma aula e concluida e a proxima
+    comeca (possivelmente ainda dentro da mesma sessao/app aberto)."""
+
+    lesson: Lesson
+    attempt_id: int
+    student_turns: int
+    first_ever: bool
+    struggling: bool
+
+    def as_context(self) -> LessonContext:
+        return LessonContext(
+            level=self.lesson.level,
+            lesson_title=self.lesson.title,
+            can_do_objective=self.lesson.can_do_objective,
+            focus_vocab=self.lesson.focus_vocab,
+            first_ever_lesson=self.first_ever,
+            struggling=self.struggling,
+        )
+
+
+def _start_lesson_state(memory: Memory, session_id: int) -> LessonState:
+    lesson_id = memory.get_current_lesson_id()
+    lesson = curriculum.get_lesson(lesson_id)
+    first_ever = memory.is_first_ever_lesson()
+    struggling = memory.count_recent_incomplete_attempts(lesson_id) >= 3
+    attempt_id = memory.start_lesson_attempt(session_id, lesson_id)
+    return LessonState(lesson=lesson, attempt_id=attempt_id, student_turns=0, first_ever=first_ever, struggling=struggling)
+
+
+def _open_session(
+    cfg: dict,
+    memory: Memory,
+    tts: TextToSpeech,
+    tutor: Tutor,
+    audio_io: AudioIO,
+    bridge: TutorBridge,
+    session_id: int,
+    history: list[dict],
+    state: LessonState,
+) -> None:
+    """Emily fala primeiro: se apresenta (1a aula da vida do aluno) ou puxa
+    assunto rumo ao objetivo da aula atual, em vez de esperar calada."""
+    window_turns = cfg["memory"]["history_window_turns"]
+    profile = memory.build_profile()
+
+    turn = tutor.open_session(profile.as_prompt_block(), state.as_context(), history)
+
+    bridge.reply_text_changed.emit(turn.reply)
+    bridge.correction_added.emit("")
+
+    history.append({"role": "assistant", "content": turn.reply})
+    history[:] = history[-window_turns * 2 :]
+
+    memory.record_turn(session_id, "", turn.reply)
+    memory.record_vocabulary(session_id, turn.new_vocab)
+
+    audio_out = tts.synthesize(turn.reply)
+    audio_io.play(audio_out, tts.sample_rate)
+
+
 def _process_turn(
     cfg: dict,
     memory: Memory,
@@ -44,22 +113,25 @@ def _process_turn(
     stop_event: threading.Event,
     session_id: int,
     history: list[dict],
-) -> None:
+    state: LessonState,
+) -> bool:
+    """Processa um turno do aluno. Retorna True se isso completou a aula
+    atual (o chamador deve recarregar o LessonState pra proxima aula)."""
     window_turns = cfg["memory"]["history_window_turns"]
 
     audio = audio_io.listen_for_utterance(stop_event)
     if stop_event.is_set() or audio.size == 0:
-        return
+        return False
 
     user_text = stt.transcribe(audio)
     if not user_text:
-        return
+        return False
 
     bridge.error_changed.emit("")
     bridge.user_text_changed.emit(user_text)
 
     profile = memory.build_profile()
-    turn = tutor.respond(profile.as_prompt_block(), history, user_text)
+    turn = tutor.respond(profile.as_prompt_block(), state.as_context(), history, user_text)
 
     bridge.reply_text_changed.emit(turn.reply)
     if turn.corrections:
@@ -75,6 +147,8 @@ def _process_turn(
     history.append({"role": "assistant", "content": turn.reply})
     history[:] = history[-window_turns * 2 :]
 
+    state.student_turns += 1
+
     memory.record_turn(session_id, user_text, turn.reply)
     memory.record_corrections(session_id, turn.corrections)
     memory.record_vocabulary(session_id, turn.new_vocab)
@@ -82,42 +156,13 @@ def _process_turn(
     audio_out = tts.synthesize(turn.reply)
     audio_io.play(audio_out, tts.sample_rate)
 
+    if turn.lesson_complete and state.student_turns >= state.lesson.min_student_turns:
+        next_id = curriculum.next_lesson_id(state.lesson.id)
+        memory.mark_lesson_complete(state.attempt_id, state.lesson.id, next_id, turn.lesson_notes)
+        log.info("Lesson %s completed (%s) -> %s", state.lesson.id, turn.lesson_notes, next_id)
+        return True
 
-def _open_session(
-    cfg: dict,
-    memory: Memory,
-    tts: TextToSpeech,
-    tutor: Tutor,
-    audio_io: AudioIO,
-    bridge: TutorBridge,
-    session_id: int,
-    history: list[dict],
-    is_first_session: bool,
-) -> None:
-    """Emily fala primeiro: se apresenta (1a vez) ou puxa assunto (demais vezes),
-    em vez de ficar esperando calada o usuario iniciar a conversa."""
-    window_turns = cfg["memory"]["history_window_turns"]
-    profile = memory.build_profile()
-    last_topic = memory.get_setting("last_topic")
-    topic = curriculum.pick_topic(profile.cefr_level, avoid=last_topic)
-
-    turn = tutor.open_session(
-        profile.as_prompt_block(), history, is_first_session, level=profile.cefr_level, topic=topic
-    )
-
-    bridge.reply_text_changed.emit(turn.reply)
-    bridge.correction_added.emit("")
-
-    history.append({"role": "assistant", "content": turn.reply})
-    history[:] = history[-window_turns * 2 :]
-
-    memory.record_turn(session_id, "", turn.reply)
-    memory.record_vocabulary(session_id, turn.new_vocab)
-    if not is_first_session:
-        memory.set_setting("last_topic", topic)
-
-    audio_out = tts.synthesize(turn.reply)
-    audio_io.play(audio_out, tts.sample_rate)
+    return False
 
 
 def conversation_loop(
@@ -133,18 +178,23 @@ def conversation_loop(
     """Loop principal com auto-recuperacao: um erro num turno nao mata a sessao inteira."""
     session_id = memory.start_session()
     history = memory.load_recent_history(cfg["memory"]["history_window_turns"])
-    is_first_session = memory.build_profile().sessions_count <= 1
+    state = _start_lesson_state(memory, session_id)
 
     try:
         try:
-            _open_session(cfg, memory, tts, tutor, audio_io, bridge, session_id, history, is_first_session)
+            _open_session(cfg, memory, tts, tutor, audio_io, bridge, session_id, history, state)
         except Exception:
             log.exception("Greeting failed, continuing straight to listening")
             audio_io.amp.set_state("idle")
 
         while not stop_event.is_set():
             try:
-                _process_turn(cfg, memory, stt, tts, tutor, audio_io, bridge, stop_event, session_id, history)
+                lesson_completed = _process_turn(
+                    cfg, memory, stt, tts, tutor, audio_io, bridge, stop_event, session_id, history, state
+                )
+                if lesson_completed:
+                    memory.finalize_attempt(state.attempt_id, state.student_turns)
+                    state = _start_lesson_state(memory, session_id)
             except Exception:
                 log.exception("Turn failed, recovering")
                 bridge.error_changed.emit("Something went wrong on that turn - try speaking again.")
@@ -152,6 +202,7 @@ def conversation_loop(
                 time.sleep(1.5)
                 audio_io.amp.set_state("idle")
     finally:
+        memory.finalize_attempt(state.attempt_id, state.student_turns)
         memory.end_session(session_id)
 
 

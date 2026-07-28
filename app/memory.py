@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.curriculum import CEFR_SPEAKING_DESCRIPTORS, level_from_session_count
+from app.curriculum import CEFR_SPEAKING_DESCRIPTORS, FIRST_LESSON_ID, get_lesson
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -20,6 +20,23 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lesson_progress (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    current_lesson_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lesson_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id),
+    lesson_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    student_turn_count INTEGER NOT NULL DEFAULT 0,
+    completed INTEGER NOT NULL DEFAULT 0,
+    completion_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -58,15 +75,14 @@ class LearnerProfile:
     cefr_level: str = "A1"
 
     def as_prompt_block(self) -> str:
+        """Contexto geral do aluno (erros/vocabulario) - o nivel/aula atual
+        entram separadamente no prompt via app/tutor.py (ver
+        docs/emily_lesson_system_prompt.md), essa funcao nao decide mais
+        isso sozinha."""
         descriptor = CEFR_SPEAKING_DESCRIPTORS.get(self.cefr_level, "")
-        if self.sessions_count == 0:
-            return (
-                "This is the student's first session ever. Assume CEFR level A1 "
-                f"(beginner) until proven otherwise. What A1 speakers can do: {descriptor}"
-            )
         lines = [
             f"Sessions so far: {self.sessions_count}",
-            f"Estimated CEFR level: {self.cefr_level} - {descriptor}",
+            f"Estimated CEFR level (based on curriculum progress): {self.cefr_level} - {descriptor}",
             f"Vocabulary already introduced: {self.known_vocab_count} words",
         ]
         if self.top_mistake_patterns:
@@ -156,12 +172,78 @@ class Memory:
         counts = Counter(c[0] for c in categories if c[0])
         top_patterns = [f"{cat} ({n}x)" for cat, n in counts.most_common(5)]
 
+        lesson = get_lesson(self.get_current_lesson_id())
+
         return LearnerProfile(
             sessions_count=sessions_count,
             top_mistake_patterns=top_patterns,
             known_vocab_count=known_vocab_count,
-            cefr_level=level_from_session_count(sessions_count),
+            cefr_level=lesson.level,
         )
+
+    # --- progresso por aula (ver docs/lesson_progression.md) ----------------
+
+    def get_current_lesson_id(self) -> str:
+        row = self._conn.execute("SELECT current_lesson_id FROM lesson_progress WHERE id = 1").fetchone()
+        if row:
+            return row[0]
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT INTO lesson_progress (id, current_lesson_id, updated_at) VALUES (1, ?, ?)",
+            (FIRST_LESSON_ID, now),
+        )
+        self._conn.commit()
+        return FIRST_LESSON_ID
+
+    def is_first_ever_lesson(self) -> bool:
+        """True somente se o aluno nunca concluiu nenhuma aula - usado para
+        decidir se a Emily precisa da ponte bilingue de acolhimento."""
+        if self.get_current_lesson_id() != FIRST_LESSON_ID:
+            return False
+        completed = self._conn.execute(
+            "SELECT COUNT(*) FROM lesson_attempts WHERE completed = 1"
+        ).fetchone()[0]
+        return completed == 0
+
+    def count_recent_incomplete_attempts(self, lesson_id: str) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ? AND completed = 0",
+            (lesson_id,),
+        ).fetchone()[0]
+
+    def start_lesson_attempt(self, session_id: int, lesson_id: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "INSERT INTO lesson_attempts (session_id, lesson_id, started_at, completed) "
+            "VALUES (?, ?, ?, 0)",
+            (session_id, lesson_id, now),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def finalize_attempt(self, attempt_id: int, student_turn_count: int) -> None:
+        """Fecha o registro da tentativa (sessao/turno terminou), SEM mexer
+        em `completed` - se nao foi marcada como concluida explicitamente
+        antes disso, permanece 0 para sempre. E assim que fechar o app sem
+        interagir, ou um crash, nunca vira progresso por engano."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE lesson_attempts SET ended_at = ?, student_turn_count = ? WHERE id = ?",
+            (now, student_turn_count, attempt_id),
+        )
+        self._conn.commit()
+
+    def mark_lesson_complete(self, attempt_id: int, lesson_id: str, next_lesson_id: str, reason: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE lesson_attempts SET completed = 1, completion_reason = ?, ended_at = ? WHERE id = ?",
+            (reason, now, attempt_id),
+        )
+        self._conn.execute(
+            "UPDATE lesson_progress SET current_lesson_id = ?, updated_at = ? WHERE id = 1",
+            (next_lesson_id, now),
+        )
+        self._conn.commit()
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()

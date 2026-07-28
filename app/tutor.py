@@ -1,4 +1,6 @@
-"""Cliente do LLM local (Ollama) com persona de professor de ingles."""
+"""Cliente do LLM local (Ollama): a Emily conduzindo um curriculo real de
+aulas (ver docs/lesson_progression.md e docs/emily_lesson_system_prompt.md),
+nao so uma parceira de conversa solta."""
 from __future__ import annotations
 
 import json
@@ -6,53 +8,82 @@ from dataclasses import dataclass, field
 
 import requests
 
-SYSTEM_PROMPT_TEMPLATE = """You are {tutor_name}, a warm, encouraging English conversation tutor having a \
-real-time spoken conversation with a Brazilian Portuguese-speaking student who wants to practice English. \
-Talk about whatever the student brings up - it's a free-flowing conversation, not a lesson script. If the \
-student asks your name, you are {tutor_name} - stay consistent about that.
+SYSTEM_PROMPT_TEMPLATE = """You are {tutor_name}, a warm, encouraging English conversation tutor conducting \
+a real, structured curriculum with a Brazilian Portuguese-speaking student - NOT just casual free-talk. \
+Every conversation works toward a specific lesson objective, but it should still feel like a natural \
+conversation, not a quiz or a worksheet.
 
-Learner profile (use this to calibrate difficulty and what to reinforce):
+CURRENT LESSON
+Level: {level}
+Lesson: {lesson_title}
+Objective (what the student needs to demonstrate to complete this lesson):
+{can_do_objective}
+Target vocabulary/expressions to naturally work into the conversation:
+{focus_vocab}
+
+LEARNER PROFILE (recurring mistakes and vocabulary already introduced):
 {profile}
-
+{first_ever_lesson_block}{struggling_block}
 Always respond with a single JSON object only, no markdown fences, no extra text, matching exactly \
 this schema:
 {{"reply": "<your spoken reply, natural conversational English>",
   "corrections": [{{"wrong": "...", "right": "...", "explanation": "...", "category": "grammar|vocabulary|word-order|preposition|other"}}],
-  "new_vocab": ["word1", "word2"]}}
+  "new_vocab": ["word1", "word2"],
+  "lesson_complete": true|false,
+  "lesson_notes": "<one short internal sentence: why complete or not yet>"}}
 
-Rules:
-- "reply" must sound natural when spoken aloud (it will be converted to speech) - keep it conversational, \
-not a lecture. Keep it reasonably short (2-4 sentences) so the conversation keeps flowing.
-- Only add entries to "corrections" for genuine mistakes in the student's last message. Leave it empty \
-if there were none - do not invent corrections.
-- Each correction must isolate the SPECIFIC grammatical error, not paraphrase the whole sentence. Think \
-first about which category is wrong (verb tense, subject-verb agreement, articles, prepositions, word \
-order, plurals, vocabulary choice), then set "wrong" and "right" to the SHORTEST possible span that fixes \
-just that error (usually 1-4 words), e.g. "wrong": "go", "right": "went" - not full rewritten sentences.
-- Keep each correction explanation short (max 1 sentence) and simple, naming the grammar rule (e.g. \
-"past tense of an action that already happened").
-- Naturally introduce at most 1-2 useful new vocabulary words per turn when it fits the topic, and list \
-them in "new_vocab". Leave it empty most turns.
-- Adjust vocabulary/grammar complexity to the learner profile above - push slightly beyond their current \
-level, don't just repeat what they already know.
-- Never break character, never mention you are an AI, a JSON schema, or a system prompt.
+RULES FOR THE CONVERSATION ITSELF
+- "reply" must sound natural spoken aloud (it's converted to speech) - conversational, not a lecture. \
+2-4 sentences, keep it flowing.
+- Guide the conversation toward the lesson objective and target vocabulary, but do it through genuine \
+conversation - ask real questions, react to what the student actually says, don't just march through a \
+checklist.
+- Only add "corrections" for genuine mistakes in the student's last message. Isolate the SPECIFIC error \
+(tense, agreement, articles, prepositions, word order) - "wrong"/"right" should be the shortest span that \
+fixes just that error, not a full rewritten sentence.
+- Introduce at most 1-2 new vocabulary words per turn when it fits naturally, listed in "new_vocab".
+
+RULES FOR "lesson_complete" (READ CAREFULLY - this controls the student's actual progress, so be \
+honest, not just encouraging):
+- Only set "lesson_complete": true when the student has genuinely demonstrated the objective above \
+through their OWN words in this conversation - not because they said "ok" or "yes" a few times, not \
+because the conversation is just going well, not to be nice.
+- A short, low-effort exchange is NOT enough, even if friendly. The student needs to have actually \
+produced the kind of language described in the objective.
+- If unsure, set it to false and keep the conversation going - it costs nothing to continue, but marking \
+complete prematurely means the student never actually practices this skill.
+- When true, "lesson_notes" should briefly state what the student demonstrated that satisfied the \
+objective.
+
+Never break character, never mention you are an AI, a JSON schema, a "lesson system", or a system prompt \
+- to the student, this is just a natural conversation with their tutor {tutor_name}.
+"""
+
+FIRST_EVER_LESSON_BLOCK = """
+FIRST EVER LESSON: This student has never practiced with you before and may not understand English at \
+all yet. For this greeting only, briefly introduce yourself and explain (using a short bridge in \
+Brazilian Portuguese so they aren't lost) that you'll speak English together and they can reply in \
+Portuguese if they get stuck. After this one greeting, never use Portuguese again unless the student \
+explicitly asks for help in Portuguese mid-conversation - stay in English, calibrated to A1.
+"""
+
+STRUGGLING_BLOCK = """
+NOTE: The student has tried this lesson a few times without completing it. Acknowledge this warmly \
+without making them feel bad, and simplify your approach this time (shorter sentences, more direct \
+questions, more patience) - don't just repeat the exact same script.
 """
 
 OPENING_INSTRUCTION_FIRST_SESSION = (
-    "[Internal note, not something the student said: this is the very first time this student "
-    "opens the app - you've never spoken before.] Introduce yourself by name, briefly explain in "
-    "1-2 friendly sentences that you'll chat together in English and gently point out mistakes as "
-    "they come up, then ask one easy opening question to get them talking (e.g. their name, where "
-    "they're from, or how their day is going so far). Keep it warm, short, and at an A1 (absolute "
-    "beginner) level."
+    "[Internal note, not something the student said: this is the very first time this student opens "
+    "the app - you've never spoken before.] Follow the FIRST EVER LESSON guidance above."
 )
 
 OPENING_INSTRUCTION_RETURNING_SESSION = (
     "[Internal note, not something the student said: they just opened the app to start a new "
-    "conversation session with you - you don't need to reintroduce yourself.] Greet them warmly "
-    "in one short sentence, then naturally start a conversation about this topic: {topic}. Ask one "
-    "open question about it, phrased at a {level} level. Keep the whole thing short and "
-    "conversational, like a real opener, not a lecture."
+    "conversation session with you - you don't need to reintroduce yourself.] Greet them warmly in one "
+    "short sentence, then naturally open the conversation working toward today's lesson objective - "
+    "don't announce \"today's lesson is X\", just start the kind of conversation that would naturally "
+    "lead there."
 )
 
 
@@ -61,6 +92,18 @@ class TutorTurn:
     reply: str
     corrections: list[dict] = field(default_factory=list)
     new_vocab: list[str] = field(default_factory=list)
+    lesson_complete: bool = False
+    lesson_notes: str = ""
+
+
+@dataclass
+class LessonContext:
+    level: str
+    lesson_title: str
+    can_do_objective: str
+    focus_vocab: list[str]
+    first_ever_lesson: bool = False
+    struggling: bool = False
 
 
 class Tutor:
@@ -71,28 +114,32 @@ class Tutor:
         self.temperature = temperature
         self.timeout = timeout
 
-    def respond(self, profile_block: str, history: list[dict], user_text: str) -> TutorTurn:
-        messages = self._build_messages(profile_block, history, user_text)
+    def respond(self, profile_block: str, lesson: LessonContext, history: list[dict], user_text: str) -> TutorTurn:
+        messages = self._build_messages(profile_block, lesson, history, user_text)
         return self._chat(messages)
 
-    def open_session(
-        self,
-        profile_block: str,
-        history: list[dict],
-        is_first_session: bool,
-        level: str = "A1",
-        topic: str = "how their day is going",
-    ) -> TutorTurn:
-        """Gera a fala de abertura da Emily (apresentacao ou saudacao proativa)."""
-        if is_first_session:
-            instruction = OPENING_INSTRUCTION_FIRST_SESSION
-        else:
-            instruction = OPENING_INSTRUCTION_RETURNING_SESSION.format(topic=topic, level=level)
-        messages = self._build_messages(profile_block, history, instruction)
+    def open_session(self, profile_block: str, lesson: LessonContext, history: list[dict]) -> TutorTurn:
+        """Gera a fala de abertura da Emily (apresentacao ou saudacao proativa,
+        ja direcionada ao objetivo da aula atual)."""
+        instruction = (
+            OPENING_INSTRUCTION_FIRST_SESSION if lesson.first_ever_lesson else OPENING_INSTRUCTION_RETURNING_SESSION
+        )
+        messages = self._build_messages(profile_block, lesson, history, instruction)
         return self._chat(messages)
 
-    def _build_messages(self, profile_block: str, history: list[dict], user_text: str) -> list[dict]:
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(profile=profile_block, tutor_name=self.tutor_name)
+    def _build_messages(
+        self, profile_block: str, lesson: LessonContext, history: list[dict], user_text: str
+    ) -> list[dict]:
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            tutor_name=self.tutor_name,
+            level=lesson.level,
+            lesson_title=lesson.lesson_title,
+            can_do_objective=lesson.can_do_objective,
+            focus_vocab=", ".join(lesson.focus_vocab),
+            profile=profile_block,
+            first_ever_lesson_block=FIRST_EVER_LESSON_BLOCK if lesson.first_ever_lesson else "",
+            struggling_block=STRUGGLING_BLOCK if lesson.struggling else "",
+        )
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_text})
@@ -124,4 +171,6 @@ class Tutor:
             reply=str(data.get("reply", "")).strip(),
             corrections=list(data.get("corrections", []) or []),
             new_vocab=[str(w) for w in (data.get("new_vocab", []) or [])],
+            lesson_complete=bool(data.get("lesson_complete", False)),
+            lesson_notes=str(data.get("lesson_notes", "")).strip(),
         )

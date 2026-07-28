@@ -35,7 +35,6 @@ audio:
 memory:
   db_path: "data/tutor.db"
   history_window_turns: 12     # quantos turnos recentes entram no contexto do LLM
-  profile_update_every_n_sessions: 1
 
 ui:
   window_title: "Emily - English Tutor"
